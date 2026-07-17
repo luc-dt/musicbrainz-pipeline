@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "datamate": {
+      "type": "stdio",
+      "command": "C:\\Users\\Admin\\AppData\\Local\\Programs\\Antigravity IDE\\Antigravity IDE.exe",
+      "args": [
+        "c:\\Users\\Admin\\.antigravity-ide\\extensions\\altimateai.vscode-altimate-mcp-server-0.8.8-win32-x64\\dist\\datamate-cli.js",
+        "start-stdio"
+      ],
+      "env": {
+        "ALTIMATE_EXTENSION_RPC": "\\\\.\\pipe\\altimate-mcp-14848",
+        "ELECTRON_RUN_AS_NODE": "1"
+      },
+      "updatedAt": "2026-07-17T11:02:19.002Z"
+    }
+  }
+}
