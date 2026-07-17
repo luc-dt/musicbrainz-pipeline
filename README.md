@@ -163,6 +163,8 @@ The transformation process produces three normalized datasets.
 - Release status
 - Track count
 - MusicBrainz URL
+- Artist search term   
+- Extraction timestamp  
 
 ---
 
@@ -209,9 +211,11 @@ musicbrainz-pipeline/
 │   └── transform/
 │
 ├── notebooks/
-│
+│   └── Music Data Pipeline Project.ipynb
+|
 ├── images/
-│
+│   └── musicbrainz_etl_architecture.png
+|
 ├── data/
 │   └── transformed/
 │

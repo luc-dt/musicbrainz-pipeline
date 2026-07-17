@@ -1,4 +1,4 @@
-# Import library
+# Import libraries
 import os
 import json
 import boto3
@@ -9,8 +9,6 @@ from datetime import datetime
 # Create S3 client
 s3 = boto3.client("s3")
 
-# Read environment variables 
-RAW_BUCKET = os.environ["RAW_BUCKET"]
 
 def album(data):
     album_list = []
@@ -54,16 +52,16 @@ def artist(data):
             artist_credits = recording.get("artist-credit", [])
 
             for artist_info in artist_credits:
-                artist_obj  = artist_info.get("artist", {})
+                artist_obj = artist_info.get("artist", {})
                 artist_id = artist_obj.get("id")
 
                 artist_list.append({
                     "artist_id": artist_id,
-                    "artist_name": artist_obj .get("name"),
-                    "artist_sort_name": artist_obj .get("sort-name"),
-                    "artist_type": artist_obj .get("type"),
-                    "artist_country": artist_obj .get("country"),
-                    "artist_disambiguation": artist_obj .get("disambiguation"),
+                    "artist_name": artist_obj.get("name"),
+                    "artist_sort_name": artist_obj.get("sort-name"),
+                    "artist_type": artist_obj.get("type"),
+                    "artist_country": artist_obj.get("country"),
+                    "artist_disambiguation": artist_obj.get("disambiguation"),
                     "artist_url": f"https://musicbrainz.org/artist/{artist_id}" if artist_id else None,
                     "artist_search": artist_search,
                     "extracted_at": extracted_at
