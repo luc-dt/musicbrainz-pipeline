@@ -6,7 +6,7 @@ import pandas as pd
 from io import StringIO 
 from datetime import datetime 
 
-# Create S3 cient
+# Create S3 client
 s3 = boto3.client("s3")
 
 # Read environment variables 
@@ -54,16 +54,16 @@ def artist(data):
             artist_credits = recording.get("artist-credit", [])
 
             for artist_info in artist_credits:
-                artist = artist_info.get("artist", {})
-                artist_id = artist.get("id")
+                artist_obj  = artist_info.get("artist", {})
+                artist_id = artist_obj.get("id")
 
                 artist_list.append({
                     "artist_id": artist_id,
-                    "artist_name": artist.get("name"),
-                    "artist_sort_name": artist.get("sort-name"),
-                    "artist_type": artist.get("type"),
-                    "artist_country": artist.get("country"),
-                    "artist_disambiguation": artist.get("disambiguation"),
+                    "artist_name": artist_obj .get("name"),
+                    "artist_sort_name": artist_obj .get("sort-name"),
+                    "artist_type": artist_obj .get("type"),
+                    "artist_country": artist_obj .get("country"),
+                    "artist_disambiguation": artist_obj .get("disambiguation"),
                     "artist_url": f"https://musicbrainz.org/artist/{artist_id}" if artist_id else None,
                     "artist_search": artist_search,
                     "extracted_at": extracted_at
@@ -153,7 +153,7 @@ def lambda_handler(event, context):
 
     return {
         'statusCode': 200,
-        'body': json.dumps('Hello from Lambda!')
+        'body': json.dumps('Transformation completed successfully.')
     }
 
    

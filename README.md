@@ -135,9 +135,11 @@ The transformation process produces three normalized datasets.
 
 - Recording ID
 - Recording title
-- Duration
+- Duration (ms)
+- Video flag
 - First release date
 - Search score
+- Artist search term
 - Extraction timestamp
 
 ### Artist Dataset
@@ -149,6 +151,8 @@ The transformation process produces three normalized datasets.
 - Country
 - Disambiguation
 - MusicBrainz URL
+- Artist search term
+- Extraction timestamp
 
 ### Album Dataset
 
@@ -198,7 +202,7 @@ Typical analyses include:
 ## Repository Structure
 
 ```text
-musicbrainz_etl/
+musicbrainz-pipeline/
 
 ├── lambda/
 │   ├── extract/
