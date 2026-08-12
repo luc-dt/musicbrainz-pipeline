@@ -1,29 +1,49 @@
-# Environment files with secrets
+# ============================================
+# Environment & Secrets
+# ============================================
 .env
 .env.local
+.env.example
 airflow/.env
 *.env
 
+# ============================================
+# Python
+# ============================================
 .venv/
-.cache/
-
-# Learning diary
-diary.md
-.spotify_cache
-
-
 __pycache__/
 *.pyc
+.cache/
 
-data/transformed/
+# Jupyter
 .ipynb_checkpoints/
+.ipynb
 
+# ============================================
+# Data & Cache
+# ============================================
+data/
+diary.md
+.spotify_cache/
+
+# ============================================
+# CloudFormation & Deployment
+# ============================================
 lambda/extract/template.yaml
-
 lambda/transform/template.yaml
 
-.claude
-PLAN.md
+# ============================================
+# IDE & Editor
+# ============================================
+.vscode/
 
-# Airflow logs (may contain AWS credentials)
+# ============================================
+# Airflow
+# ============================================
 airflow/logs/
+
+# ============================================
+# Claude
+# ============================================
+.claude/
+PLAN.md

@@ -1,71 +1,103 @@
 #!/usr/bin/env python3
 """
-Script to update AWS credentials in Airflow connection.
-Run this after starting Airflow with real credentials in .env
+Update the aws_default Airflow connection.
+
+AWS credentials are read from environment variables:
+
+    AWS_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY
+    AWS_DEFAULT_REGION
 
 Usage:
-    python update_aws_credentials.py --access-key AKIAxxx --secret-key your-secret
+    python update_aws_credentials.py
 """
-import argparse
+
+import json
+import os
+
 import requests
 from requests.auth import HTTPBasicAuth
-import json
+
 
 AIRFLOW_URL = "http://localhost:8080"
-AIRFLOW_USER = ""
-AIRFLOW_PASS = ""  
+AIRFLOW_USER = os.getenv("AIRFLOW_USER", "airflow")
+AIRFLOW_PASS = os.getenv("AIRFLOW_PASS", "airflow")
 
-def update_aws_credentials(access_key: str, secret_key: str, region: str = "ap-southeast-2"):
-    """Update the aws_default connection with new credentials."""
 
-    # First try to get existing connection
+def update_aws_credentials():
+    """Create or update the aws_default Airflow connection."""
+
+    access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    region = os.getenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+
+    if not access_key or not secret_key:
+        raise ValueError(
+            "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
+            "must be set as environment variables."
+        )
+
+    auth = HTTPBasicAuth(AIRFLOW_USER, AIRFLOW_PASS)
+
+    # Check whether connection already exists
     response = requests.get(
         f"{AIRFLOW_URL}/api/v1/connections/aws_default",
-        auth=HTTPBasicAuth(AIRFLOW_USER, AIRFLOW_PASS)
+        auth=auth,
+        timeout=10,
     )
 
     if response.status_code == 404:
-        # Create new connection
         data = {
             "connection_id": "aws_default",
             "conn_type": "aws",
             "login": access_key,
             "password": secret_key,
-            "extra": json.dumps({"region_name": region})
+            "extra": json.dumps({
+                "region_name": region
+            }),
         }
-        method = "POST"
-        url = f"{AIRFLOW_URL}/api/v1/connections"
-    else:
-        # Update existing connection
+
+        response = requests.post(
+            f"{AIRFLOW_URL}/api/v1/connections",
+            auth=auth,
+            headers={"Content-Type": "application/json"},
+            json=data,
+            timeout=10,
+        )
+
+    elif response.status_code == 200:
         data = {
             "login": access_key,
             "password": secret_key,
-            "extra": json.dumps({"region_name": region})
+            "extra": json.dumps({
+                "region_name": region
+            }),
         }
-        method = "PATCH"
-        url = f"{AIRFLOW_URL}/api/v1/connections/aws_default"
 
-    response = requests.request(
-        method,
-        url,
-        auth=HTTPBasicAuth(AIRFLOW_USER, AIRFLOW_PASS),
-        headers={"Content-Type": "application/json"},
-        json=data
-    )
+        response = requests.patch(
+            f"{AIRFLOW_URL}/api/v1/connections/aws_default",
+            auth=auth,
+            headers={"Content-Type": "application/json"},
+            json=data,
+            timeout=10,
+        )
 
-    if response.status_code in [200, 201]:
-        print("✅ AWS connection updated successfully!")
-        print(f"   Access Key: {access_key[:8]}...")
-        print(f"   Region: {region}")
     else:
-        print(f"❌ Error: {response.status_code}")
-        print(response.text)
+        raise RuntimeError(
+            f"Failed to check Airflow connection: "
+            f"{response.status_code} {response.text}"
+        )
+
+    if response.status_code in (200, 201):
+        print("AWS connection updated successfully.")
+        print(f"Access Key: {access_key[:8]}...")
+        print(f"Region: {region}")
+    else:
+        raise RuntimeError(
+            f"Failed to update AWS connection: "
+            f"{response.status_code} {response.text}"
+        )
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Update AWS credentials in Airflow")
-    parser.add_argument("--access-key", required=True, help="AWS Access Key ID")
-    parser.add_argument("--secret-key", required=True, help="AWS Secret Access Key")
-    parser.add_argument("--region", default="ap-southeast-2", help="AWS Region")
-
-    args = parser.parse_args()
-    update_aws_credentials(args.access_key, args.secret_key, args.region)
+    update_aws_credentials()

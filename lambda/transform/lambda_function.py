@@ -101,9 +101,11 @@ def lambda_handler(event, context):
         object_key = event["Records"][0]["s3"]["object"]["key"]
     else:
         # Case 2: Called directly from Airflow
-        # Use environment variable or default bucket
+        # Use environment variable
         import os
-        bucket_name = os.environ.get("RAW_BUCKET", "musicbrainz-etl-project-luc")
+        bucket_name = os.environ.get("RAW_BUCKET")
+        if not bucket_name:
+            raise ValueError("Missing environment variable: RAW_BUCKET")
 
         # Find the latest file in to_processed folder
         import boto3
