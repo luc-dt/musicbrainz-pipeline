@@ -12,8 +12,8 @@ from requests.auth import HTTPBasicAuth
 import json
 
 AIRFLOW_URL = "http://localhost:8080"
-AIRFLOW_USER = "airflow"
-AIRFLOW_PASS = "airflow"  # Change if you changed default
+AIRFLOW_USER = ""
+AIRFLOW_PASS = ""  
 
 def update_aws_credentials(access_key: str, secret_key: str, region: str = "ap-southeast-2"):
     """Update the aws_default connection with new credentials."""
