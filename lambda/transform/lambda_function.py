@@ -94,9 +94,31 @@ def song(data):
 
 
 def lambda_handler(event, context):
-    # Parse the S3 event
-    bucket_name = event["Records"][0]["s3"]["bucket"]["name"]
-    object_key = event["Records"][0]["s3"]["object"]["key"]
+    # Handle both S3 Event trigger and direct invocation from Airflow
+    if event and "Records" in event:
+        # Case 1: Triggered by S3 Event (automatic)
+        bucket_name = event["Records"][0]["s3"]["bucket"]["name"]
+        object_key = event["Records"][0]["s3"]["object"]["key"]
+    else:
+        # Case 2: Called directly from Airflow
+        # Use environment variable or default bucket
+        import os
+        bucket_name = os.environ.get("RAW_BUCKET", "musicbrainz-etl-project-luc")
+
+        # Find the latest file in to_processed folder
+        import boto3
+        s3_client = boto3.client("s3")
+        
+        response = s3_client.list_objects_v2(
+            Bucket=bucket_name,
+            Prefix="raw_data/to_processed/"
+        )
+        if response.get("Contents"):
+            # Get the most recent file
+            latest_file = sorted(response["Contents"], key=lambda x: x["LastModified"])[-1]
+            object_key = latest_file["Key"]
+        else:
+            raise Exception("No files found in raw_data/to_processed/")
 
     print(f"Bucket: {bucket_name}")
     print(f"Object: {object_key}")

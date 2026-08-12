@@ -1,7 +1,16 @@
+# Environment files with secrets
 .env
+.env.local
+airflow/.env
+*.env
+
 .venv/
 .cache/
+
+# Learning diary
+diary.md
 .spotify_cache
+
 
 __pycache__/
 *.pyc
@@ -12,3 +21,9 @@ data/transformed/
 lambda/extract/template.yaml
 
 lambda/transform/template.yaml
+
+.claude
+PLAN.md
+
+# Airflow logs (may contain AWS credentials)
+airflow/logs/
