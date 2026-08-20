@@ -25,7 +25,7 @@ __pycache__/
 data/
 diary.md
 .spotify_cache/
-
+questions.md
 # ============================================
 # CloudFormation & Deployment
 # ============================================
@@ -47,3 +47,5 @@ airflow/logs/
 # ============================================
 .claude/
 PLAN.md
+
+.bruin.yml

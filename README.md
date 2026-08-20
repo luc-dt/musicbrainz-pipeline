@@ -1,12 +1,12 @@
 # MusicBrainz ETL Pipeline
 
-An end-to-end **scheduled batch ETL pipeline** that extracts music metadata from the MusicBrainz REST API, orchestrates the workflow with Apache Airflow, stores data in Amazon S3, and transforms nested JSON into analytics-ready CSV datasets.
+An end-to-end batch ETL pipeline that extracts music metadata from the MusicBrainz REST API, normalizes deeply nested JSON into analytics-ready CSV datasets, and orchestrates the workflow via Apache Airflow with AWS Lambda for compute and S3 for storage.
 
 ---
 
 ## Introduction & Goals
 
-This project demonstrates a production-oriented serverless ETL architecture on AWS. The MusicBrainz open-data API provides music metadata (artists, albums, recordings) without authentication requirements, allowing the project to focus entirely on data engineering fundamentals.
+Music metadata from REST APIs arrives as deeply nested JSON — recordings contain releases, which contain artists, each with their own attributes. This structure is efficient for API responses but unsuitable for direct SQL analysis. The pipeline automates the extraction and normalization so analysts can query structured CSV data without writing flatten logic.
 
 **Goal 1:** Extract music metadata from MusicBrainz API into raw JSON  
 **How I know it worked:** Raw JSON files appear in `raw_data/to_processed/` in S3, ~5MB per run
@@ -16,14 +16,6 @@ This project demonstrates a production-oriented serverless ETL architecture on A
 
 **Goal 3:** Orchestrate the full pipeline via Apache Airflow  
 **How I know it worked:** All three tasks complete with green status; DAG runs `@daily` on schedule
-
----
-
-## Why This Matters
-
-Music metadata is deeply nested in API responses—recordings contain releases, which contain artists, each with their own attributes. Direct SQL analysis requires flattening this structure. This pipeline automates that transformation, making the data queryable for analytics.
-
-The architectural decision to use **Airflow as the orchestration layer** (rather than native EventBridge → Lambda chaining) demonstrates workflow management skills: retry logic, task dependencies, and observability in a single tool.
 
 ---
 
@@ -61,12 +53,19 @@ The architectural decision to use **Airflow as the orchestration layer** (rather
 │              bucket: musicbrainz-etl-project-luc                      │
 │                                                                      │
 │   raw_data/                    transformed_data/                       │
-│   ├── to_processed/           ├── album_data/  (album_YYYY-MM-DD.csv) │
+│   ├── to_processed/           ├── album_data/  (album_YYYY-MM-DD.csv)│
 │   │   └── *.json              ├── artist_data/ (artist_YYYY-MM-DD.csv│
-│   └── processed/              └── song_data/   (song_YYYY-MM-DD.csv) │
+│   └── processed/              └── song_data/   (song_YYYY-MM-DD.csv)│
 │       └── *.json                                                     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+**Flow:**
+1. Airflow DAG triggers the Extract Lambda on a daily schedule
+2. Extract Lambda fetches data for 5 artists from MusicBrainz API and writes raw JSON to S3
+3. Airflow's S3KeySensor waits for the JSON file to appear
+4. Airflow triggers the Transform Lambda
+5. Transform Lambda reads raw JSON, normalizes to 3 CSV files, archives raw JSON
 
 ---
 
@@ -86,9 +85,11 @@ The architectural decision to use **Airflow as the orchestration layer** (rather
 
 ### How Much Data Is It?
 
-- **Per run:** 5 API calls × 50 recordings max = ~250 recordings
-- **Raw JSON:** ~5MB per extraction
-- **Transformed CSV:** ~150KB total (album + artist + song)
+> 5 artists × 50 recordings max = 250 recordings per run  
+> Each recording JSON: ~20KB (includes nested releases, artists, tags)  
+> Raw JSON per run: ~5MB  
+> Transformed CSV: ~150KB total (album + artist + song tables)  
+> Over 1 year of daily runs: ~1.8GB raw, ~55MB transformed
 
 ---
 
@@ -96,7 +97,7 @@ The architectural decision to use **Airflow as the orchestration layer** (rather
 
 - **Budget:** Operated within AWS free-tier limits (Lambda: 400K GB-s/month, S3: 5GB)
 - **API Rate Limit:** MusicBrainz allows 1 request/second; the extract Lambda sleeps 1.1s between calls
-- **No OAuth:** Using open MusicBrainz API 
+- **No OAuth:** Using open MusicBrainz API — no authentication required
 - **Time:** Lambda timeout of 15 minutes; extraction completes in ~10 seconds
 
 ---
@@ -143,7 +144,7 @@ The architectural decision to use **Airflow as the orchestration layer** (rather
 
 **Used Tool:** Amazon S3
 
-**Why:** Durable object storage; integrates natively with Lambda and Glue; low cost per GB
+**Why:** Durable object storage; integrates natively with Lambda and Airflow; low cost per GB
 
 **Alternative:** Amazon DynamoDB
 
@@ -163,18 +164,6 @@ The architectural decision to use **Airflow as the orchestration layer** (rather
 
 ---
 
-### Store
-
-**Used Tool:** Amazon S3 (same bucket, different prefixes)
-
-**Why:** Medallion-style folder structure; raw JSON preserved; transformed CSV queryable
-
-**Alternative:** Separate bucket per layer
-
-**Why not:** Single bucket with prefixes is simpler for this scale; no cross-bucket data movement needed
-
----
-
 ## Pipelines
 
 ### Batch Processing
@@ -189,75 +178,150 @@ The architectural decision to use **Airflow as the orchestration layer** (rather
 
 ---
 
+## Sample Output
+
+**Input** (MusicBrainz API excerpt — nested JSON):
+```json
+{
+  "releases": [
+    {
+      "id": "abc123",
+      "title": "A Rush of Blood to the Head",
+      "date": "2002-08-26",
+      "country": "GB",
+      "artist-credit": [
+        {
+          "artist": {
+            "id": "def456",
+            "name": "Coldplay",
+            "sort-name": "Coldplay"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Output** (Transformed CSV files):
+```csv
+# album_data/album_2024-01-15.csv
+album_id,album_title,release_date,country,artist_id
+abc123,A Rush of Blood to the Head,2002-08-26,GB,def456
+
+# artist_data/artist_2024-01-15.csv
+artist_id,artist_name,sort_name
+def456,Coldplay,Coldplay
+
+# song_data/song_2024-01-15.csv
+recording_id,recording_title,duration_ms,album_id
+rec001,Clocks,222000,abc123
+rec002,The Scientist,189000,abc123
+```
+
+---
+
 ## Data Quality
 
 | Check | Implementation |
 |-------|----------------|
-| Deduplication | `drop_duplicates(subset=["album_id"])` etc. in Pandas |
+| Deduplication | `drop_duplicates(subset=["album_id"])` in Pandas |
 | Null handling | `errors="coerce"` on date parsing |
 | Schema preservation | Fixed column set per output file |
-| Idempotency | Re-running produces new timestamped files; raw JSON archived |
+| Idempotency | Re-running produces timestamped files; raw JSON archived |
 
 ---
 
-## Demo
+## Limitations
 
-*(Screenshots to be added after Power BI dashboard is implemented)*
-
----
-
-## What Breaks
-
-- **[Lambda Timeout]** If MusicBrainz API is slow, extract may exceed 15-minute Lambda limit  
-  **Impact:** Partial extraction, no retry  
-  **Solution:** Increase Lambda timeout or reduce `limit` parameter
-
-- **[S3 Event Conflict]** If Lambda is triggered by both S3 Event and Airflow, duplicate processing occurs  
-  **Impact:** CSV files processed twice (safe, but wasteful)  
-  **Solution:** Disable S3 trigger when using Airflow orchestration
-
-- **[API Rate Limit]** If 5 calls complete in <5 seconds, MusicBrainz may return 503  
-  **Impact:** Extract fails, DAG retries  
-  **Solution:** Exponential backoff decorator handles this automatically
-
-- **[No Glue/Athena Yet]** Data is in CSV, not yet cataloged for SQL queries  
-  **Impact:** Cannot query via Athena  
-  **Solution:** Planned for Day 8 (Star Schema in Athena)
+- **No automated tests** — Pipeline behavior validated manually via Airflow DAG runs. No unit or integration tests exist.
+- **No data quality framework** — Deduplication via Pandas `drop_duplicates()`; no Great Expectations or similar validation library.
+- **No monitoring/observability** — Pipeline health checked via Airflow Web UI task logs only; no Grafana or CloudWatch dashboards.
+- **Small-scale data** — Processes 5 artists × 50 recordings per run (~250 records); not benchmarked at production volume.
+- **Batch-only** — No streaming or real-time processing support.
 
 ---
 
-## Privacy & Security
+## Future Work
 
-- No PII stored; only public music metadata
-- AWS credentials stored in Airflow Connections, not in code
-- `.gitignore` excludes `.env` files with secrets
-- MusicBrainz API requires `User-Agent` header with email (configured as Lambda env var)
+1. **Medallion architecture** — Add Bronze/Silver/Gold layers with AWS Glue for incremental data quality enforcement.
+2. **Data quality validation** — Integrate Great Expectations to catch schema and completeness issues before downstream processing.
+3. **Athena integration** — Catalog CSV files in Glue Data Catalog for SQL analytics via Athena.
+4. **Power BI dashboard** — Visualize artist popularity, album release trends, and song duration distributions.
 
 ---
 
-## Conclusion
+## Quickstart
 
-This project demonstrates core data engineering skills:
+### Prerequisites
 
-- **ETL pipeline development** (extract → transform → load)
-- **Cloud architecture** (AWS Lambda, S3, IAM)
-- **Workflow orchestration** (Apache Airflow DAGs)
-- **Serverless patterns** (event-driven Lambda, S3 triggers)
-- **Data modeling** (flattening nested JSON to relational CSVs)
+- Python 3.11+
+- Docker Compose v2.0+
+- AWS account with Lambda, S3, and IAM permissions
 
-### Technical Lessons
+### Setup
 
-1. Lambda invocation modes matter: S3 Event vs direct invocation pass different `event` structures
-2. Airflow task dependencies chain with `>>` operator; reading left-to-right means "then"
-3. S3 folder structure (`to_processed/` → `processed/`) enables idempotent reprocessing
-4. API rate limits require explicit backoff; the decorator pattern works well
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/musicbrainz-pipeline.git
+cd musicbrainz-pipeline
 
-### Next Iteration
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-- **Day 5:** Medallion architecture (Bronze/Silver/Gold) with Glue jobs
-- **Day 7:** Data quality validation with Great Expectations
-- **Day 8:** Star schema in Athena for SQL analytics
-- **Day 9:** Power BI dashboard
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Configure environment variables
+cp airflow/.env.example airflow/.env
+# Edit airflow/.env and set your AWS credentials:
+#   AIRFLOW_VAR_AWS_ACCESS_KEY_ID=your_access_key
+#   AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY=your_secret_key
+```
+
+### Start Airflow
+
+```bash
+cd airflow
+docker compose up -d
+
+# Verify Airflow is running
+docker compose ps
+
+# Access Airflow UI at http://localhost:8080
+# Default credentials: airflow / airflow
+```
+
+### Trigger the Pipeline
+
+```bash
+# Trigger the DAG manually
+docker exec airflow-airflow-webserver-1 airflow dags trigger musicbrainz_etl_dag
+
+# Monitor progress in Airflow UI at http://localhost:8080
+```
+
+### Verify Output
+
+```bash
+# Check Lambda logs
+aws logs tail /aws/lambda/musicbrainz-api-extract --region ap-southeast-2
+
+# List S3 contents
+aws s3 ls s3://musicbrainz-etl-project-luc/ --recursive
+```
+
+---
+
+## Testing
+
+No automated tests exist for this pipeline. Pipeline behavior is validated manually:
+
+1. Trigger the DAG via Airflow UI or CLI
+2. Verify all three tasks complete with green status
+3. Check S3 for raw JSON in `raw_data/to_processed/`
+4. Check S3 for CSV files in `transformed_data/{album,artist,song}_data/`
 
 ---
 
@@ -281,6 +345,7 @@ musicbrainz-pipeline/
 ├── images/
 │   └── musicbrainz_etl_architecture.png
 ├── README.md
+├── requirements.txt
 └── .gitignore
 ```
 
