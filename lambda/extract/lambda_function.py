@@ -28,19 +28,34 @@ RETRY_DELAY = 5  # seconds
 s3 = boto3.client("s3")
 
 
-def retry_on_503(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
-    """Decorator to retry on 503 Service Unavailable errors."""
+# -----------------------------
+# Robust Retry Decorator
+# -----------------------------
+def retry_api_call(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
+    """
+    Decorator to retry on transient HTTP errors (503, 429, 502, 504)
+    and network Timeouts/Connection drops with exponential backoff.
+    """
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
+            current_delay = delay
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
                 except requests.exceptions.HTTPError as e:
-                    if e.response.status_code == 503 and attempt < max_retries - 1:
-                        print(f"503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
-                        time.sleep(delay)
-                        delay *= 2  # Exponential backoff
+                    status = e.response.status_code if e.response is not None else 0
+                    if status in (429, 502, 503, 504) and attempt < max_retries - 1:
+                        print(f"HTTP {status} on {func.__name__}, retrying in {current_delay}s (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(current_delay)
+                        current_delay *= 2
+                    else:
+                        raise
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    if attempt < max_retries - 1:
+                        print(f"{type(e).__name__} on {func.__name__}, retrying in {current_delay}s (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(current_delay)
+                        current_delay *= 2
                     else:
                         raise
             return func(*args, **kwargs)
@@ -77,13 +92,13 @@ def lambda_handler(event, context):
             "fmt": "json"
         }
 
-        @retry_on_503()
+        @retry_api_call()
         def fetch_artist_data():
             response = requests.get(
                 f"{BASE_URL}/recording",
                 headers=headers,
                 params=params,
-                timeout=30
+                timeout=(10, 45)  # (10s connect, 45s read timeout)
             )
             response.raise_for_status()
             return response.json()
