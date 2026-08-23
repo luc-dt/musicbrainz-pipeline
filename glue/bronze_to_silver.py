@@ -30,8 +30,8 @@ Architecture Flow:
   Bronze (Raw JSON) ---> PySpark (bronze_to_silver.py) ---> Silver (Parquet Tables)
 ========================================================================================
 """
-
 import os
+import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
@@ -43,9 +43,18 @@ from pyspark.sql.functions import (
     lit,
     concat,
     length,
-    when
+    when,
+    max as spark_max              # to find the latest timestamp in the batch
 )
+
 from pyspark.sql.types import IntegerType, LongType, BooleanType
+
+# Ensure Python can find watermark_manager.py whether running locally or on AWS Glue
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from watermark_manager import WatermarkManager
 
 
 # 1. Create a local Spark session
@@ -69,15 +78,38 @@ else:
     bronze_path = os.path.join(PROJECT_ROOT, "airflow", "data", "raw", "*.json").replace("\\", "/")
     silver_base = os.path.join(PROJECT_ROOT, "data", "silver").replace("\\", "/")
 
+# 3. Initialize Watermark Manager and State (Step 1)
+wm = WatermarkManager()
+last_watermark = wm.get_watermark("bronze_to_silver", default="1970-01-01 00:00:00")
+print(f"\n📊 [Incremental Engine] Active watermark for 'bronze_to_silver': {last_watermark}")
 
-
-# 3. Read the raw JSON files from Bronze
+# 4. Read the raw JSON files from Bronze
 bronze_df = spark.read.option("multiline", "true").json(bronze_path)
-
-# # Let's inspecct the raw schema Spark inferred
+# # Let's inspect the raw schema Spark inferred
 # bronze_df.printSchema()
 
-# 4. Transform Artists (Dimension Table)
+# 5. Filter for Delta Records (Step 2)
+delta_df = bronze_df.filter(
+    to_timestamp(col("extracted_at")) > to_timestamp(lit(last_watermark))
+)
+delta_count = delta_df.count()
+print(f"📊 [Incremental Engine] Found {delta_count} new bronze records since {last_watermark}")
+
+# Early exit if no new data arrived
+if delta_count == 0:
+    print("✨ No new records to process. Pipeline is up to date. Exiting cleanly.")
+    spark.stop()
+    sys.exit(0)
+
+# Calculate the new max timestamp from incoming batch
+max_extracted_at = (
+    delta_df
+    .select(spark_max(to_timestamp(col("extracted_at"))).cast("string"))
+    .collect()[0][0]
+)
+print(f"🎯 [Incremental Engine] Batch maximum extracted_at: {max_extracted_at}\n")
+
+# 6. Transform Artists (Dimension Table)
 def transform_artists(df):
     """
     Extract, flatten, and deduplicate artists into a conformed Silver table.
@@ -119,7 +151,7 @@ def transform_artists(df):
 
     return artists_clean
 
-# 5. Transform Albums (Dimension Table)
+# 6. Transform Albums (Dimension Table)
 def transform_albums(df):
     """
     Extract, flatten, parse dates, and deduplicate albums into a conformed Silver table.
@@ -173,7 +205,7 @@ def transform_albums(df):
     return albums_clean
 
 
-# 6. Transform Songs (Fact Table)
+# 7. Transform Songs (Fact Table)
 def transform_songs(df):
     """
     Extract, cast types, clean dates, and deduplicate songs into a conformed Silver table.
@@ -215,36 +247,56 @@ def transform_songs(df):
 
     return songs_clean
 
-# 7. Execute All Transformations & Save to Parquet
+# 8. Helper: Idempotent Merge & Save Function (Step 3)
+def merge_and_save(delta_df, target_path, primary_keys):
+    """
+    Unions delta records with historical Parquet data, deduplicates on primary key,
+    and overwrites the target directory safely.
+    """
+    try:
+        existing_df = spark.read.parquet(target_path)
+        combined_df = existing_df.unionByName(delta_df)
+        final_df = combined_df.dropDuplicates(primary_keys)
+        print(f"   ↳ Merged: {existing_df.count()} existing + {delta_df.count()} delta -> {final_df.count()} unique rows")
+    except Exception:
+        final_df = delta_df.dropDuplicates(primary_keys)
+        print(f"   ↳ Initial write: {final_df.count()} rows")
+
+    final_df.write.mode("overwrite").parquet(target_path)
+
+# 9. Execute All Transformations & Save to Parquet
 
 print("\n" + "=" * 50)
 print("🚀 EXECUTING BRONZE TO SILVER PIPELINE")
 print("=" * 50)
 
-print("1. Transforming Artists...")
-artists_df = transform_artists(bronze_df)
+print("1. Transforming Delta Artists...")
+artists_df = transform_artists(delta_df)
 
-print("2. Transforming Albums...")
-albums_df = transform_albums(bronze_df)
+print("2. Transforming Delta Albums...")
+albums_df = transform_albums(delta_df)
 
-print("3. Transforming Songs...")
-songs_df = transform_songs(bronze_df)
+print("3. Transforming Delta Songs...")
+songs_df = transform_songs(delta_df)
+
 
 # Output paths
 artists_out = f"{silver_base}/artists"
 albums_out = f"{silver_base}/albums"
 songs_out = f"{silver_base}/songs"
 
-print(f"\nWriting Silver Artists ({artists_df.count()} rows) -> {artists_out}...")
-artists_df.write.mode("overwrite").parquet(artists_out)
+print(f"\n1. Writing Silver Artists -> {artists_out}")
+merge_and_save(artists_df, artists_out, primary_keys=["artist_id"])
+print(f"2. Writing Silver Albums  -> {albums_out}")
+merge_and_save(albums_df, albums_out, primary_keys=["album_id"])
+print(f"3. Writing Silver Songs   -> {songs_out}")
+merge_and_save(songs_df, songs_out, primary_keys=["recording_id"])
 
-print(f"Writing Silver Albums  ({albums_df.count()} rows) -> {albums_out}...")
-albums_df.write.mode("overwrite").parquet(albums_out)
 
-print(f"Writing Silver Songs   ({songs_df.count()} rows) -> {songs_out}...")
-songs_df.write.mode("overwrite").parquet(songs_out)
-
+# 10. Commit the new Watermark to State Store (Only after writes succeed!)
+wm.update_watermark("bronze_to_silver", max_extracted_at)
+print(f"\n🎯 [State Committed] Successfully updated watermark to: {max_extracted_at}")
 print("\n" + "=" * 50)
-print("🎉 SILVER LAYER GENERATION COMPLETE!")
+print("🎉 SILVER LAYER DELTA MERGE COMPLETE!")
 print("=" * 50)
 
