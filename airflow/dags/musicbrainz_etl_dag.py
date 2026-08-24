@@ -89,6 +89,20 @@ with TaskGroup("transform_medallion", dag=dag) as transform_medallion:
         dag=dag,
     )
 
+    glue_data_quality = GlueJobOperator(
+        task_id='glue_data_quality',
+        job_name='musicbrainz-data-quality',
+        script_location='s3://musicbrainz-etl-project-luc/scripts/data_quality.py',
+        s3_bucket='musicbrainz-etl-project-luc',
+        iam_role_name='AWSGlueServiceRole-musicbrainz-s3-glue-role', 
+        aws_conn_id='aws_default',
+        wait_for_completion=True,
+        retries=1,
+        retry_delay=timedelta(minutes=2),
+        dag=dag,
+    )
+
+
     glue_silver_to_gold = GlueJobOperator(
         task_id='glue_silver_to_gold',
         job_name='musicbrainz-silver-to-gold',
@@ -104,7 +118,7 @@ with TaskGroup("transform_medallion", dag=dag) as transform_medallion:
     )
 
     # Dependency inside group
-    check_s3_file >> glue_bronze_to_silver >> glue_silver_to_gold
+    check_s3_file >> glue_bronze_to_silver >> glue_data_quality  >> glue_silver_to_gold
 
 # Group-level dependency
 extract_data >> transform_medallion
