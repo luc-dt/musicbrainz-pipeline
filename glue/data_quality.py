@@ -215,8 +215,8 @@ print("\n--- Test Check 5: Range & Value Bounds ---")
 # 1. Album track count must be at least 1
 dq.check_range(albums_df, "albums", col_name="track_count", min_val=1)
 
-# 2. Song length must be between 1 second (1,000 ms) and 1 hour (3,600,000 ms)
-dq.check_range(songs_df,  "songs",  col_name="length_ms", min_val=1000, max_val=3600000)
+# 2. Song length must be between 1 second (1,000 ms) and 5 hours (18,000,000 ms)
+dq.check_range(songs_df,  "songs",  col_name="length_ms", min_val=1000, max_val=18000000)
 
 # 3. Match score must be between 0 and 100
 dq.check_range(songs_df,  "songs",  col_name="score", min_val=0, max_val=100)

@@ -78,6 +78,9 @@ with TaskGroup("transform_medallion", dag=dag) as transform_medallion:
         task_id='glue_bronze_to_silver',
         job_name='musicbrainz-bronze-to-silver',
         script_location='s3://musicbrainz-etl-project-luc/scripts/bronze_to_silver.py',
+        script_args={
+            '--extra-py-files': 's3://musicbrainz-etl-project-luc/scripts/watermark_manager.py'
+        },
         s3_bucket='musicbrainz-etl-project-luc',
         iam_role_name='AWSGlueServiceRole-musicbrainz-s3-glue-role', 
         aws_conn_id='aws_default',
