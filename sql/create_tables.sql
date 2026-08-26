@@ -32,9 +32,10 @@ LOCATION 's3://musicbrainz-etl-project-luc/silver/artists/'
 TBLPROPERTIES ('parquet.compression'='SNAPPY');
 
 
--- Dimension 2: Albums (Grain: 1 row = 1 unique album release)
+-- Dimension 2: Albums (Grain: 1 row = 1 unique album release, FK: artist_id)
 CREATE EXTERNAL TABLE IF NOT EXISTS musicbrainz_dw.dim_album (
     album_id STRING,
+    artist_id STRING,
     album_name STRING,
     country STRING,
     status STRING,
@@ -49,9 +50,10 @@ LOCATION 's3://musicbrainz-etl-project-luc/silver/albums/'
 TBLPROPERTIES ('parquet.compression'='SNAPPY');
 
 
--- Dimension 3: Songs (Grain: 1 row = 1 unique recording track)
+-- Dimension 3: Songs (Grain: 1 row = 1 unique recording track, FK: artist_id)
 CREATE EXTERNAL TABLE IF NOT EXISTS musicbrainz_dw.dim_song (
     recording_id STRING,
+    artist_id STRING,
     title STRING,
     length_ms BIGINT,
     video BOOLEAN,
@@ -66,13 +68,17 @@ TBLPROPERTIES ('parquet.compression'='SNAPPY');
 
 
 -- ========================================================================================
--- GOLD LAYER: AGGREGATED BUSINESS FACTS & KPIS
+-- GOLD LAYER: AGGREGATED BUSINESS MARTS & KPIS
 -- ========================================================================================
 
--- Fact 1: Artist 360 Summary (Aggregate Summary Fact - Grain: 1 row = 1 artist career aggregate)
+-- Table 1: Artist 360 Summary (Aggregate Business Mart / Consolidated Summary Table)
+-- Note on Dimensional Design:
+--   Pre-aggregates career metrics (song count, avg duration, album count) for sub-second
+--   dashboard response times. Carries conformed artist metadata for analytical scannability.
+-- Grain: 1 row = 1 unique artist career aggregate
 CREATE EXTERNAL TABLE IF NOT EXISTS musicbrainz_dw.fact_artist_summary (
-    artist_search STRING,
     artist_id STRING,
+    artist_search STRING,
     artist_name STRING,
     artist_sort_name STRING,
     artist_disambiguation STRING,

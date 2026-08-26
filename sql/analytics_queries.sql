@@ -50,7 +50,7 @@ SELECT
     s.score,
     s.first_release_date
 FROM musicbrainz_dw.dim_song s
-JOIN musicbrainz_dw.dim_artist a ON s.artist_search = a.artist_search
+JOIN musicbrainz_dw.dim_artist a ON s.artist_id = a.artist_id
 WHERE s.length_ms IS NOT NULL
 ORDER BY s.length_ms DESC
 LIMIT 10;
@@ -85,7 +85,7 @@ SELECT
     COUNT(alb.album_id) AS album_count,
     ROUND(AVG(alb.track_count), 1) AS avg_track_count
 FROM musicbrainz_dw.dim_artist a
-JOIN musicbrainz_dw.dim_album alb ON a.artist_search = alb.artist_search
+JOIN musicbrainz_dw.dim_album alb ON a.artist_id = alb.artist_id
 WHERE alb.status IS NOT NULL
 GROUP BY a.artist_name, alb.status
 ORDER BY a.artist_name, album_count DESC;

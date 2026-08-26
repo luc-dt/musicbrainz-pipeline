@@ -16,10 +16,10 @@ import sys
 import time
 import boto3
 
-REGION = "ap-southeast-2"
-S3_BUCKET = "musicbrainz-etl-project-luc"
+REGION = os.getenv("AWS_REGION", "ap-southeast-2")
+S3_BUCKET = os.getenv("S3_BUCKET", "musicbrainz-etl-project-luc")
 ATHENA_OUTPUT = f"s3://{S3_BUCKET}/athena-results/"
-DATABASE = "musicbrainz_dw"
+DATABASE = os.getenv("ATHENA_DATABASE", "musicbrainz_dw")
 
 athena = boto3.client("athena", region_name=REGION)
 

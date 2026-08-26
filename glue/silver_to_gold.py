@@ -78,7 +78,7 @@ def build_artist_summary(artists_df, songs_df, albums_df):
     # Part 1: Song Aggregations
     song_stats = (
         songs_df
-        .groupBy("artist_search")
+        .groupBy("artist_id")
         .agg(
             count("recording_id").alias("total_recordings"),
             round(avg(col("length_ms")) / 1000 / 60, 2).alias("avg_song_length_min"),
@@ -90,7 +90,7 @@ def build_artist_summary(artists_df, songs_df, albums_df):
     # Part 2: Album Aggregations
     album_stats = (
         albums_df
-        .groupBy("artist_search")
+        .groupBy("artist_id")
         .agg(
             count("album_id").alias("total_albums"),
             countDistinct("country").alias("distinct_release_countries"),
@@ -99,11 +99,11 @@ def build_artist_summary(artists_df, songs_df, albums_df):
         )
     )
 
-    # Part 3: Combine with Artists Dimension
+    # Part 3: Combine with Artists Dimension (joins on PK/FK artist_id)
     artist_summary = (
         artists_df
-        .join(song_stats, on="artist_search", how="left")
-        .join(album_stats, on="artist_search", how="left")
+        .join(song_stats, on="artist_id", how="left")
+        .join(album_stats, on="artist_id", how="left")
         .withColumn("created_at", current_timestamp())
     )
 
@@ -127,9 +127,8 @@ def build_yearly_release_metrics(albums_df):
         .agg(
             count("album_id").alias("total_releases"),
             round(avg("track_count"), 1).alias("avg_tracks_per_album"),
-            countDistinct("artist_search").alias("distinct_artists")
+            countDistinct("artist_id").alias("distinct_artists")
         )
-        .orderBy(col("release_year").desc(), col("total_releases").desc())
         .withColumn("created_at", current_timestamp())
     )
 

@@ -23,7 +23,8 @@ __pycache__/
 # ============================================
 # Data & Cache
 # ============================================
-docs
+docs/past_conversation.md
+docs/questions.md
 .spotify_cache/
 
 # ============================================
@@ -47,7 +48,7 @@ airflow/logs/
 # ============================================
 .claude/
 
-
+.agents
 .bruin.yml
 
 data

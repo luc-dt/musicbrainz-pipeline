@@ -60,7 +60,20 @@ def retry_api_call(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
                         raise
             return func(*args, **kwargs)
         return wrapper
-    return decorator
+@retry_api_call()
+def fetch_artist_data(headers, params):
+    """
+    Fetches recording data for a specific query from the MusicBrainz API
+    with automatic exponential backoff on transient network and HTTP errors.
+    """
+    response = requests.get(
+        f"{BASE_URL}/recording",
+        headers=headers,
+        params=params,
+        timeout=(10, 45)  # (10s connect, 45s read timeout)
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def lambda_handler(event, context):
@@ -92,18 +105,7 @@ def lambda_handler(event, context):
             "fmt": "json"
         }
 
-        @retry_api_call()
-        def fetch_artist_data():
-            response = requests.get(
-                f"{BASE_URL}/recording",
-                headers=headers,
-                params=params,
-                timeout=(10, 45)  # (10s connect, 45s read timeout)
-            )
-            response.raise_for_status()
-            return response.json()
-
-        data = fetch_artist_data()
+        data = fetch_artist_data(headers, params)
 
         raw_data.append({
             "artist_search": artist,

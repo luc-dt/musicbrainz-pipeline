@@ -46,6 +46,9 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 │  │trigger_extract_lambda│ ───────► │check_s3_file ──► glue_bronze_to_silver   │   │
 │  └──────────────────────┘          │                        │                 │   │
 │                                    │                        ▼                 │   │
+│                                    │                glue_data_quality         │   │
+│                                    │                        │                 │   │
+│                                    │                        ▼                 │   │
 │                                    │               glue_silver_to_gold        │   │
 │                                    └──────────────────────────────────────────┘   │
 └──────────────────────────────────────────┬────────────────────────────────────────┘
@@ -53,13 +56,15 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
        ┌───────────────────────────────────┴───────────────────────────────────┐
        ▼                                                                       ▼
 ┌──────────────────────────────┐                         ┌─────────────────────────────────┐
-│   AWS LAMBDA (Ingestion)     │                         │      AWS GLUE (PySpark 4.0)     │
-│   musicbrainz-api-extract    │                         │   Serverless Distributed Spark  │
+│   AWS LAMBDA (Ingestion)     │                         │   AWS GLUE 4.0 (Apache Spark)   │
+│   musicbrainz-api-extract    │                         │   Serverless Spark 3.3.0 Engine │
 │                              │                         │                                 │
 │  • Rate-limited API extract  │                         │  • Job 1: Bronze -> Silver      │
 │  • Exponential backoff       │                         │    (Explode, Clean, Parquet)    │
-│  • Saves raw JSON to S3      │                         │  • Job 2: Silver -> Gold        │
-└──────────────┬───────────────┘                         │    (Artist 360 & Yearly Trends) │
+│  • Saves raw JSON to S3      │                         │  • Job 2: Data Quality Gate     │
+└──────────────┬───────────────┘                         │    (Fail-fast assertions)       │
+               │                                         │  • Job 3: Silver -> Gold        │
+               │                                         │    (Artist 360 & Yearly Trends) │
                │                                         └────────────────┬────────────────┘
                ▼                                                          │
 ┌─────────────────────────────────────────────────────────────────────────┴────────────────┐
@@ -85,6 +90,7 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 - [Used Tools](#used-tools)
 - [Pipelines](#pipelines)
 - [Data Quality & Modeling](#data-quality--modeling)
+- [Demo & Visual Evidence](#demo--visual-evidence)
 - [Results & Execution Evidence](#results--execution-evidence)
 - [Quickstart & Reproducibility](#quickstart--reproducibility)
 - [What Breaks (Limitations & Scope)](#what-breaks-limitations--scope)
@@ -97,7 +103,7 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 # The Data Set
 
 **Source:** [MusicBrainz REST XML/JSON API v2](https://musicbrainz.org/doc/Development/XML_Web_Service/Version_2)  
-**Format:** Raw Multi-line JSON (Bronze) $\rightarrow$ Snappy Parquet (Silver & Gold)  
+**Format:** Raw Multi-line JSON (Bronze) -> Snappy Parquet (Silver & Gold)  
 **Target Entities:** 5 global artists spanning multiple genres and release volumes.
 
 | Artist | API Search Query |
@@ -110,18 +116,18 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 
 ### How Much Data Is It?
 
-> - **Input Scope:** 5 target artists $\times$ 50 recordings limit = 250 top recordings per extraction run.
+> - **Input Scope:** 5 target artists * 50 recordings limit = 250 top recordings per extraction run.
 > - **Nested JSON Payload:** Each recording contains nested arrays of releases, artist credits, genres, tags, and media tracks (~20KB per recording payload).
 > - **Bronze Raw Size:** ~5.2 MB raw JSON per batch run.
-> - **Silver Parquet Size:** ~350 KB total compressed across 3 tables (`artists`: 6 rows, `albums`: 1,323 rows, `songs`: 250 rows).
-> - **Gold Parquet Size:** ~45 KB compressed across 2 tables (`artist_summary`: 6 rows, `yearly_release_metrics`: 341 rows).
+> - **Silver Parquet Size:** ~350 KB total compressed across 3 tables (`artists`: 8 rows, `albums`: 1,323 rows, `songs`: 1,109 rows).
+> - **Gold Parquet Size:** ~45 KB compressed across 2 tables (`artist_summary`: 8 rows, `yearly_release_metrics`: 341 rows).
 > - **Annual Projected Volume:** ~1.9 GB Bronze JSON / ~140 MB Gold Parquet on daily batch schedules.
 
 ---
 
 # Constraints
 
-- **Budget:** Operated strictly within the AWS Free Tier allocation ($0 out-of-pocket).
+- **Budget:** Ultra-low-cost serverless architecture (~$1.00–$2.00 total AWS Glue DPU development spend; AWS Glue billed at ~$0.44/DPU-hour; S3, Lambda, and Athena operated within service free-tier allocations).
 - **Compute:** Serverless execution model — AWS Lambda (max 15-min timeout, 256MB RAM) and AWS Glue (2 DPU G.1X workers).
 - **Data Limits:** MusicBrainz public API rate limit capped at 1 request per second.
 - **Time:** Extraction completes in ~15s; PySpark distributed transformations complete in ~3.5 minutes total.
@@ -168,16 +174,16 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 
 1. **Airflow Schedule Trigger:** DAG starts on `@daily` schedule (00:00 UTC).
 2. **TaskGroup `extract_data`:**
-   - `trigger_extract_lambda`: Invokes `musicbrainz-api-extract` with `@retry_api_call` (exponential backoff on HTTP 503/429 and `ReadTimeout`s) $\rightarrow$ writes `raw_data/to_processed/musicbrainz_raw_*.json` to S3.
+   - `trigger_extract_lambda`: Invokes `musicbrainz-api-extract` with `@retry_api_call` (exponential backoff on HTTP 503/429 and `ReadTimeout`s) -> writes `raw_data/to_processed/musicbrainz_raw_*.json` to S3.
 3. **TaskGroup `transform_medallion`:**
    - `check_s3_file` (S3KeySensor): Polls every 60s (up to 60 min timeout) ensuring raw JSON exists in S3 before allocating cluster compute.
-   - `glue_bronze_to_silver` (GlueJobOperator): Triggers AWS Glue job `musicbrainz-bronze-to-silver` $\rightarrow$ runs `bronze_to_silver.py` $\rightarrow$ unrolls nested arrays with `explode_outer()`, normalizes multi-format dates, casts SQL types, deduplicates on primary keys, and writes 3 conformed Parquet tables to `silver/`.
-   - `glue_silver_to_gold` (GlueJobOperator): Triggers AWS Glue job `musicbrainz-silver-to-gold` $\rightarrow$ runs `silver_to_gold.py` $\rightarrow$ computes Artist 360 KPIs and Yearly release trends, writing pre-aggregated Parquet tables to `gold/`.
+   - `glue_bronze_to_silver` (GlueJobOperator): Triggers AWS Glue job `musicbrainz-bronze-to-silver` -> runs `bronze_to_silver.py` -> unrolls nested arrays with `explode_outer()`, normalizes multi-format dates, casts SQL types, deduplicates on primary keys, and writes 3 conformed Parquet tables to `silver/`.
+   - `glue_silver_to_gold` (GlueJobOperator): Triggers AWS Glue job `musicbrainz-silver-to-gold` -> runs `silver_to_gold.py` -> computes Artist 360 KPIs and Yearly release trends, writing pre-aggregated Parquet tables to `gold/`.
 4. **Failure Handling:**
-   - Ingestion: Immediate micro-retries (5s $\rightarrow$ 10s $\rightarrow$ 20s) for transient network timeouts.
+   - Ingestion: Immediate micro-retries (5s -> 10s -> 20s) for transient network timeouts.
    - Airflow: Macro-retries (`retries=2`, `retry_delay=3m`, `exponential_backoff=True`) on task failures.
    - Alerts: Instant failure alert dispatch via Gmail SMTP (`on_failure_callback`).
-   - Idempotency: All Glue write operations use `.mode("overwrite")` to ensure re-runs never duplicate rows.
+   - Idempotency: `merge_and_save()` executes an idempotent union-based delta merge (`unionByName` + `dropDuplicates` on primary keys + Parquet overwrite) to ensure re-runs never duplicate rows.
 
 ---
 
@@ -187,10 +193,27 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 | :--- | :--- | :--- |
 | **Dimensional Modeling** | Kimball Architecture: Dimensions (`artists`, `albums`) and Facts (`songs`) | Enables slice-and-dice analytics and efficient BI dashboard filtering without data anomalies. |
 | **Data Loss Prevention** | `explode_outer()` on `recordings`, `releases`, `artist-credit` | Standard `explode()` acts as an `INNER JOIN`, silently dropping recordings with empty release arrays. `explode_outer()` behaves like a `LEFT JOIN`. |
-| **Date Normalization** | Length-based parsing: `'YYYY'`, `'YYYY-MM'`, `'YYYY-MM-DD'` $\rightarrow$ ANSI `DateType` | Spark 3.0+ ANSI mode throws fatal `DateTimeException` on partial date strings. Length-based conditional normalization resolves format drift. |
+| **Date Normalization** | Length-based parsing: `'YYYY'`, `'YYYY-MM'`, `'YYYY-MM-DD'` -> ANSI `DateType` | Spark 3.0+ ANSI mode throws fatal `DateTimeException` on partial date strings. Length-based conditional normalization resolves format drift. |
 | **Deduplication** | `.dropDuplicates(["artist_id"])`, `.dropDuplicates(["album_id"])`, `.dropDuplicates(["recording_id"])` | Eliminates duplicated records resulting from cross-album release appearances. |
 | **Columnar Storage** | Snappy-compressed columnar Parquet with embedded statistics | Enables predicate pushdown (skipping row groups) and drastically reduces query I/O for Athena SQL. |
-| **Idempotency** | Partition-level `.mode("overwrite")` | Guarantees running the pipeline 1 time or 100 times produces the exact same data state. |
+| **Idempotent Delta Merge** | `unionByName()` + `.dropDuplicates([primary_key])` + `.mode("overwrite")` | Merges incoming delta records with historical Parquet files and deduplicates on primary keys without data anomalies. |
+
+---
+
+# Demo & Visual Evidence
+
+### 1. Data Lakehouse & Pipeline Architecture
+![Pipeline Architecture](images/musicbrainz_etl_architecture.png)
+
+### 2. Kimball Star Schema (Athena / Power BI Data Model)
+![Star Schema ERD](images/erd-musicbrainz.png)
+
+### 3. How to Reproduce & Verify Evidence
+All pipeline results and analytical data models can be verified live using the automated runners:
+1. **Airflow Orchestration**: Trigger DAG via `docker exec airflow-airflow-webserver-1 airflow dags trigger musicbrainz_etl_dag` to view the green DAG execution across TaskGroups.
+2. **Glue Jobs & Quality Gate**: Verify AWS Glue runs with `aws glue get-job-runs --job-name musicbrainz-data-quality --max-results 1`.
+3. **Athena Analytics Verification**: Run `python scripts/run_query.py sql/analytics_queries.sql` to execute all 5 business intelligence queries live against Amazon Athena.
+4. **Automated Unit Test Suite**: Run `pytest tests/test_data_quality.py -v` (5/5 automated unit tests passed).
 
 ---
 
@@ -200,22 +223,25 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 
 | Layer | Table / Target | Storage Format | Row Count | Execution Time | S3 Storage Path |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Bronze** | `musicbrainz_raw_*.json` | Raw Multi-line JSON | 5 Artists (~5.2MB) | ~14.9s (Lambda) | `s3://.../raw_data/to_processed/` |
-| **Silver** | `artists` (Dimension) | Snappy Parquet | 6 rows | \multirow{3}{*}{149s (Glue Job 1)} | `s3://.../silver/artists/` |
-| **Silver** | `albums` (Dimension) | Snappy Parquet | 1,323 rows | | `s3://.../silver/albums/` |
-| **Silver** | `songs` (Fact) | Snappy Parquet | 250 rows | | `s3://.../silver/songs/` |
-| **Gold** | `artist_summary` (KPIs) | Snappy Parquet | 6 rows | \multirow{2}{*}{65s (Glue Job 2)} | `s3://.../gold/artist_summary/` |
-| **Gold** | `yearly_release_metrics` | Snappy Parquet | 341 rows | | `s3://.../gold/yearly_release_metrics/` |
+| **Bronze** | `musicbrainz_raw_*.json` | Raw Multi-line JSON | 5 Artists (~5.2MB) | ~14.9s (Lambda) | `s3://musicbrainz-etl-project-luc/raw_data/to_processed/` |
+| **Silver** | `artists` (Dimension) | Snappy Parquet | 8 rows | ~149s (Glue Job 1) | `s3://musicbrainz-etl-project-luc/silver/artists/` |
+| **Silver** | `albums` (Dimension) | Snappy Parquet | 1,323 rows | ~149s (Glue Job 1) | `s3://musicbrainz-etl-project-luc/silver/albums/` |
+| **Silver** | `songs` (Dimension) | Snappy Parquet | 1,109 rows | ~149s (Glue Job 1) | `s3://musicbrainz-etl-project-luc/silver/songs/` |
+| **Gold** | `artist_summary` (Mart) | Snappy Parquet | 8 rows | ~65s (Glue Job 2) | `s3://musicbrainz-etl-project-luc/gold/artist_summary/` |
+| **Gold** | `yearly_release_metrics` | Snappy Parquet | 341 rows | ~65s (Glue Job 2) | `s3://musicbrainz-etl-project-luc/gold/yearly_release_metrics/` |
 
-### Sample Output: Gold Artist 360 KPIs (`gold/artist_summary`)
+### Sample Output: Gold Artist 360 Business Mart (`fact_artist_summary`)
 
-| artist_name | total_recordings | avg_song_length_min | total_albums | distinct_release_countries | earliest_release | latest_release |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Coldplay** | 50 | 4.30 min | 344 | 14 | 1999-04-26 | 2024-10-04 |
-| **Taylor Swift** | 50 | 3.82 min | 267 | 10 | 2006-10-24 | 2024-04-19 |
-| **Dua Lipa** | 50 | 3.25 min | 185 | 11 | 2015-08-21 | 2024-05-03 |
-| **James Blunt** | 50 | 3.65 min | 148 | 8 | 2004-10-11 | 2023-10-27 |
-| **BTS** | 50 | 3.51 min | 379 | 6 | 2013-06-12 | 2023-06-09 |
+| artist_name | disambiguation | total_recordings | avg_song_length_min | total_albums | distinct_release_countries | earliest_release | latest_release |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Taylor Swift** | - | 276 | 4.59 min | 1,499 | 50 | 2003-01-01 | 2026-06-19 |
+| **James Blunt** | - | 216 | 4.07 min | 368 | 35 | 2004-01-01 | 2024-10-23 |
+| **Dua Lipa** | - | 212 | 3.81 min | 375 | 35 | 2016-01-01 | 2026-06-17 |
+| **Coldplay** | - | 200 | 4.79 min | 169 | 21 | 1998-05-18 | 2022-06-03 |
+| **BTS** | South Korean boy group | 196 | 3.50 min | 198 | 7 | 2013-06-12 | 2026-07-17 |
+| **BTS** | US rapper, Born To Spit | 6 | NULL | 1 | 1 | 2006-01-01 | 2006-01-01 |
+| **Box of Tapes Sound Recordings** | Box of Tapes | 2 | 2.73 min | 1 | 1 | 2016-02-09 | 2016-02-09 |
+| **BTS** | Irish New Wave band | 1 | 3.05 min | 1 | 0 | NULL | NULL |
 
 ---
 
@@ -224,21 +250,24 @@ Real-world API data is messy, deeply nested, and prone to transient network drop
 ### 1. Prerequisites
 - Python 3.10+
 - Docker & Docker Compose
-- AWS Account with active IAM credentials (S3, Lambda, AWS Glue)
+- AWS Account with active IAM credentials (S3, Lambda, AWS Glue, Amazon Athena)
 
 ### 2. Local Environment Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/musicbrainz-pipeline.git
+git clone https://github.com/luc-dt/musicbrainz-pipeline.git
 cd musicbrainz-pipeline
 
 # Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install Python dependencies
+# Install curated dependencies
 pip install -r requirements.txt
+
+# Run automated unit tests (5/5 checks passed)
+pytest tests/test_data_quality.py -v
 ```
 
 ### 3. Environment Configuration
@@ -297,7 +326,7 @@ aws s3 ls s3://musicbrainz-etl-project-luc/gold/ --recursive --human-readable
 
 - **Dataset Scale:** Currently configured for batch extraction of 5 target artists (~250 songs); not yet benchmarked at 100M+ scale.
 - **API Rate Limits:** MusicBrainz public service enforces 1 req/sec; attempting massive concurrent multi-threading triggers HTTP 503 throttling.
-- **Automated Data Quality Suite:** Data cleaning and validation are handled natively in PySpark transformations; an automated assertion framework (e.g. Great Expectations / PyDeequ) is scheduled for Day 7.
+- **Automated Data Quality Suite:** Shipped in Day 7 via a dedicated fail-fast AWS Glue gatekeeper (`data_quality.py`) and a 5/5 automated pytest suite; declarative framework integration (e.g. Great Expectations / SodaCL) is a future enhancement.
 - **Infrastructure Provisioning:** AWS resources (Lambda, S3, Glue jobs) are currently provisioned via AWS CLI / Console; Terraform IaC automation is planned for Day 10.
 
 ### Privacy & Security
@@ -311,12 +340,12 @@ This project demonstrates the transition from a simple, single-core script to a 
 
 ### 10-Day Roadmap Alignment:
 - **Day 1–4:** Airflow setup, AWS Lambda ingestion, S3KeySensor, TaskGroups, and SMTP alerting. ✅
-- **Day 5 (Current Milestone):** Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold) with PySpark on AWS Glue. ✅
-- **Day 6 (Next Milestone):** Incremental Loading with Watermarks & Delta processing. ⏳
-- **Day 7:** Data Quality validation suite (schema & null checks). ⏳
-- **Day 8:** Amazon Athena SQL Cataloging & Star Schema. ⏳
-- **Day 9:** Power BI interactive KPI dashboards. ⏳
-- **Day 10:** Production polish & Infrastructure as Code (Terraform). ⏳
+- **Day 5:** Medallion Architecture (Bronze -> Silver -> Gold) with PySpark on AWS Glue. ✅
+- **Day 6:** Incremental Loading with Watermarks & Delta processing (watermark-driven idempotent delta merge). ✅
+- **Day 7:** Data Quality validation suite (Fail-fast gatekeeper + 5/5 pytest unit tests). ✅
+- **Day 8:** Amazon Athena SQL Cataloging & Kimball Star Schema Analytics. ✅
+- **Day 9 (Next Milestone):** Power BI interactive KPI dashboards. ⏳
+- **Day 10:** Production polish & Infrastructure as Code (Terraform) + GitHub Actions CI/CD. ⏳
 
 ---
 
@@ -328,26 +357,31 @@ musicbrainz-pipeline/
 │   ├── docker-compose.yaml
 │   ├── .env.example
 │   └── dags/
-│       └── musicbrainz_etl_dag.py
+│       └── musicbrainz_etl_dag.py     # End-to-end orchestration with retry/backoff
 ├── glue/
-│   ├── bronze_to_silver.py     # PySpark ETL: Bronze -> Silver Parquet
-│   └── silver_to_gold.py       # PySpark Aggregations: Silver -> Gold KPIs
+│   ├── bronze_to_silver.py            # PySpark ETL: Bronze JSON -> Silver Parquet
+│   ├── watermark_manager.py           # S3-backed state management for delta loads
+│   ├── data_quality.py                # Automated quality gatekeeper (Fail-fast)
+│   └── silver_to_gold.py              # PySpark Aggregations: Silver -> Gold KPIs
 ├── lambda/
-│   ├── extract/
-│   │   └── lambda_function.py   # Ingestion Lambda with @retry_api_call
-│   └── transform/
-│       └── lambda_function.py   # Legacy Pandas transform reference
+│   └── extract/
+│       └── lambda_function.py         # Ingestion Lambda with @retry_api_call
+├── sql/
+│   ├── create_tables.sql              # Athena DDL (Star Schema external tables)
+│   └── analytics_queries.sql          # 5 core business intelligence SQL queries
+├── scripts/
+│   └── run_query.py                   # CLI Athena query runner
+├── tests/
+│   └── test_data_quality.py           # Pytest unit test suite (5/5 checks passed)
 ├── docs/
-│   ├── PLAN.md                 # 10-Day roadmap & architecture tracking
-│   ├── diary.md                # Daily learning diary & error debugging logs
-│   └── questions.md            # Senior DE interview questions & model answers
-├── data/
-│   ├── silver/                 # Local Silver Parquet tables (artists, albums, songs)
-│   └── gold/                   # Local Gold Parquet tables (artist_summary, yearly_metrics)
+│   ├── PLAN.md                        # 10-Day roadmap & architecture tracking
+│   ├── diary.md                       # Daily learning diary & production RCA logs
+│   └── questions.md                   # Senior DE interview questions & model answers
 ├── images/
-│   └── musicbrainz_etl_architecture.png
-├── schema_sample.py            # Local schema inspection utility
-├── requirements.txt            # Python dependencies
+│   ├── musicbrainz_etl_architecture.png
+│   └── erd-musicbrainz.png            # Star Schema ERD diagram
+├── requirements.txt                   # Curated Python dependencies
+├── .env.example                       # Environment configuration template
 ├── README.md
 └── .gitignore
 ```

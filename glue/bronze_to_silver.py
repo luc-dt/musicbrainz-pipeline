@@ -99,15 +99,14 @@ print(f"📊 [Incremental Engine] Found {delta_count} new bronze records since {
 if delta_count == 0:
     print("✨ No new records to process. Pipeline is up to date. Exiting cleanly.")
     spark.stop()
-    sys.exit(0)
-
-# Calculate the new max timestamp from incoming batch
-max_extracted_at = (
-    delta_df
-    .select(spark_max(to_timestamp(col("extracted_at"))).cast("string"))
-    .collect()[0][0]
-)
-print(f"🎯 [Incremental Engine] Batch maximum extracted_at: {max_extracted_at}\n")
+else:
+    # Calculate the new max timestamp from incoming batch
+    max_extracted_at = (
+        delta_df
+        .select(spark_max(to_timestamp(col("extracted_at"))).cast("string"))
+        .collect()[0][0]
+    )
+    print(f"🎯 [Incremental Engine] Batch maximum extracted_at: {max_extracted_at}\n")
 
 # 6. Transform Artists (Dimension Table)
 def transform_artists(df):
@@ -167,12 +166,14 @@ def transform_albums(df):
     release_df = recording_df.select(
         col("artist_search"),
         col("extracted_at"),
+        col("recording.artist-credit")[0]["artist"]["id"].alias("artist_id"),
         explode_outer(col("recording.releases")).alias("release")
     )
 
     # Step 3: Extract album fields
     albums_raw = release_df.select(
         col("release.id").alias("album_id"),
+        col("artist_id"),
         col("release.title").alias("album_name"),
         col("release.date").alias("release_date_raw"),
         col("release.country").alias("country"),
@@ -220,6 +221,7 @@ def transform_songs(df):
     # Step 2: Extract song fields & cast types
     songs_raw = recordings_df.select(
         col("recording.id").alias("recording_id"),
+        col("recording.artist-credit")[0]["artist"]["id"].alias("artist_id"),
         col("recording.title").alias("title"),
         col("recording.length").cast(LongType()).alias("length_ms"),
         col("recording.video").cast(BooleanType()).alias("video"),
@@ -264,39 +266,40 @@ def merge_and_save(delta_df, target_path, primary_keys):
 
     final_df.write.mode("overwrite").parquet(target_path)
 
-# 9. Execute All Transformations & Save to Parquet
+# 9. Execute All Transformations & Save to Parquet (if delta data present)
+if delta_count > 0:
+    print("\n" + "=" * 50)
+    print("🚀 EXECUTING BRONZE TO SILVER PIPELINE")
+    print("=" * 50)
 
-print("\n" + "=" * 50)
-print("🚀 EXECUTING BRONZE TO SILVER PIPELINE")
-print("=" * 50)
+    print("1. Transforming Delta Artists...")
+    artists_df = transform_artists(delta_df)
 
-print("1. Transforming Delta Artists...")
-artists_df = transform_artists(delta_df)
+    print("2. Transforming Delta Albums...")
+    albums_df = transform_albums(delta_df)
 
-print("2. Transforming Delta Albums...")
-albums_df = transform_albums(delta_df)
+    print("3. Transforming Delta Songs...")
+    songs_df = transform_songs(delta_df)
 
-print("3. Transforming Delta Songs...")
-songs_df = transform_songs(delta_df)
+    # Output paths
+    artists_out = f"{silver_base}/artists"
+    albums_out = f"{silver_base}/albums"
+    songs_out = f"{silver_base}/songs"
 
+    print(f"\n1. Writing Silver Artists -> {artists_out}")
+    merge_and_save(artists_df, artists_out, primary_keys=["artist_id"])
+    print(f"2. Writing Silver Albums  -> {albums_out}")
+    merge_and_save(albums_df, albums_out, primary_keys=["album_id"])
+    print(f"3. Writing Silver Songs   -> {songs_out}")
+    merge_and_save(songs_df, songs_out, primary_keys=["recording_id"])
 
-# Output paths
-artists_out = f"{silver_base}/artists"
-albums_out = f"{silver_base}/albums"
-songs_out = f"{silver_base}/songs"
+    # 10. Commit the new Watermark to State Store (Only after writes succeed!)
+    wm.update_watermark("bronze_to_silver", max_extracted_at)
+    print(f"\n🎯 [State Committed] Successfully updated watermark to: {max_extracted_at}")
+    print("\n" + "=" * 50)
+    print("🎉 SILVER LAYER DELTA MERGE COMPLETE!")
+    print("=" * 50)
+else:
+    print("\n✨ Pipeline execution finished cleanly with 0 new records to process.")
 
-print(f"\n1. Writing Silver Artists -> {artists_out}")
-merge_and_save(artists_df, artists_out, primary_keys=["artist_id"])
-print(f"2. Writing Silver Albums  -> {albums_out}")
-merge_and_save(albums_df, albums_out, primary_keys=["album_id"])
-print(f"3. Writing Silver Songs   -> {songs_out}")
-merge_and_save(songs_df, songs_out, primary_keys=["recording_id"])
-
-
-# 10. Commit the new Watermark to State Store (Only after writes succeed!)
-wm.update_watermark("bronze_to_silver", max_extracted_at)
-print(f"\n🎯 [State Committed] Successfully updated watermark to: {max_extracted_at}")
-print("\n" + "=" * 50)
-print("🎉 SILVER LAYER DELTA MERGE COMPLETE!")
-print("=" * 50)
 
